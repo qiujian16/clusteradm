@@ -187,7 +187,7 @@ func addonCondition(addon addonv1alpha1.ManagedClusterAddOn) map[string]any {
 	}
 	for _, condType := range testingConds {
 		cond := meta.FindStatusCondition(addon.Status.Conditions, condType)
-		conds[fmt.Sprintf(".%s.Status.%s", addon.Namespace, condType)] = fmt.Sprintf("%s -> %s", condType, sanitize(cond))
+		conds[fmt.Sprintf(".%s.Status.%s", addon.Namespace, condType)] = sanitize(cond)
 	}
 	return conds
 }

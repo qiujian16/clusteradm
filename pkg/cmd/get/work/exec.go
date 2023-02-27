@@ -86,14 +86,13 @@ func (o *Options) run() (err error) {
 func (o *Options) convertToTree(obj runtime.Object, tree *printer.TreePrinter) *printer.TreePrinter {
 	if workList, ok := obj.(*workapiv1.ManifestWorkList); ok {
 		for _, work := range workList.Items {
-			cluster, number, applied, available := getFileds(work)
-			mp := make(map[string]interface{})
-			mp[".Cluster"] = cluster
-			mp[".Number of Manifests"] = number
-			mp[".Applied"] = applied
-			mp[".Available"] = available
+			details := printer.WorkDetails(".Manifests", &work)
+			_, number, applied, available := getFileds(work)
+			details[".Number of Manifests"] = number
+			details[".Applied"] = applied
+			details[".Available"] = available
 
-			tree.AddFileds(work.Name, &mp)
+			tree.AddFileds(work.Name, &details)
 		}
 	}
 	return tree

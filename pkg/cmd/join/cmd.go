@@ -48,8 +48,8 @@ func NewCmd(clusteradmFlags *genericclioptionsclusteradm.ClusteradmFlags, stream
 	}
 
 	genericclioptionsclusteradm.SpokeMutableFeatureGate.AddFlag(cmd.Flags())
-	cmd.Flags().StringVar(&o.token, "hub-token", "", "The token to access the hub")
-	cmd.Flags().StringVar(&o.hubAPIServer, "hub-apiserver", "", "The api server url to the hub")
+	cmd.Flags().StringVar(&o.config.Token, "hub-token", "", "The token to access the hub")
+	cmd.Flags().StringVar(&o.config.HubAPIServer, "hub-apiserver", "", "The api server url to the hub")
 	cmd.Flags().StringVar(&o.caFile, "ca-file", "", "the file path to hub ca, optional")
 	cmd.Flags().StringVar(&o.clusterName, "cluster-name", "", "The name of the joining cluster")
 	cmd.Flags().StringVar(&o.outputFile, "output-file", "", "The generated resources will be copied in the specified file")
@@ -66,8 +66,8 @@ func NewCmd(clusteradmFlags *genericclioptionsclusteradm.ClusteradmFlags, stream
 	cmd.Flags().StringVarP(&o.mode, "mode", "m", "default", "mode to deploy klusterlet, can be default or hosted")
 	cmd.Flags().StringVar(&o.managedKubeconfigFile, "managed-cluster-kubeconfig", "", "To specify the directory to external managed cluster kubeconfig in hosted mode")
 	cmd.Flags().BoolVar(&o.singleton, "singleton", false, "If true, deploy singleton mode of klusterlet to have registration and work agents run in a single pod. This is an alpha stage flag.")
-	cmd.Flags().StringVar(&o.proxyURL, "proxy-url", "", "the URL of a forward proxy server that will be used by agents to connect to the hub cluster.")
-	cmd.Flags().StringVar(&o.proxyCAFile, "proxy-ca-file", "", "the file path to proxy ca, optional")
+	cmd.Flags().StringVar(&o.config.ProxyURL, "proxy-url", "", "the URL of a forward proxy server that will be used by agents to connect to the hub cluster.")
+	cmd.Flags().StringVar(&o.config.ProxyCAFile, "proxy-ca-file", "", "the file path to proxy ca, optional")
 
 	return cmd
 }

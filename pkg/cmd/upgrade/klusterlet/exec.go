@@ -10,12 +10,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 	operatorclient "open-cluster-management.io/api/client/operator/clientset/versioned"
-	"open-cluster-management.io/clusteradm/pkg/cmd/join"
-	join_scenario "open-cluster-management.io/clusteradm/pkg/cmd/join/scenario"
 	"open-cluster-management.io/clusteradm/pkg/helpers"
-	"open-cluster-management.io/clusteradm/pkg/helpers/reader"
 	"open-cluster-management.io/clusteradm/pkg/helpers/version"
-	"open-cluster-management.io/clusteradm/pkg/helpers/wait"
+	"open-cluster-management.io/clusteradm/pkg/join"
 )
 
 //nolint:deadcode,varcheck
@@ -58,9 +55,8 @@ func (o *Options) complete(cmd *cobra.Command, args []string) (err error) {
 		Registry:    o.registry,
 		ClusterName: k.Spec.ClusterName,
 		Klusterlet: join.Klusterlet{
-			Name:                k.Name,
-			Mode:                string(k.Spec.DeployOption.Mode),
-			KlusterletNamespace: k.Spec.Namespace,
+			Name: k.Name,
+			Mode: string(k.Spec.DeployOption.Mode),
 		},
 		BundleVersion: join.BundleVersion{
 			RegistrationImageVersion: versionBundle.Registration,
@@ -106,45 +102,11 @@ func (o *Options) validate() error {
 }
 
 func (o *Options) run() error {
-	r := reader.NewResourceReader(o.builder, o.ClusteradmFlags.DryRun, o.Streams)
+	b := join.NewBuilder().
+		WithSpokeKubeConfig(o.ClusteradmFlags.KubectlFactory.ToRawKubeConfigLoader()).
+		WithValues(o.values)
 
-	_, apiExtensionsClient, _, err := helpers.GetClients(o.ClusteradmFlags.KubectlFactory)
-	if err != nil {
-		return err
-	}
-
-	files := []string{
-		"join/namespace.yaml",
-		"join/cluster_role.yaml",
-		"join/cluster_role_binding.yaml",
-		"join/klusterlets.crd.yaml",
-		"join/service_account.yaml",
-	}
-
-	err = r.Apply(join_scenario.Files, o.values, files...)
-	if err != nil {
-		return err
-	}
-
-	err = r.Apply(join_scenario.Files, o.values, "join/operator.yaml")
-	if err != nil {
-		return err
-	}
-
-	if !o.ClusteradmFlags.DryRun {
-		if err := wait.WaitUntilCRDReady(apiExtensionsClient, "klusterlets.operator.open-cluster-management.io", o.wait); err != nil {
-			return err
-		}
-	}
-	if o.wait && !o.ClusteradmFlags.DryRun {
-		if err := wait.WaitUntilRegistrationOperatorReady(
-			o.ClusteradmFlags.KubectlFactory,
-			int64(o.ClusteradmFlags.Timeout)); err != nil {
-			return err
-		}
-	}
-
-	err = r.Apply(join_scenario.Files, o.values, "join/klusterlets.cr.yaml")
+	_, err := b.ApplyImport(context.TODO(), o.ClusteradmFlags.DryRun, o.wait, false, o.Streams)
 	if err != nil {
 		return err
 	}

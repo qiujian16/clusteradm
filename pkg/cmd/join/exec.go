@@ -2,14 +2,10 @@
 package join
 
 import (
-	"bytes"
 	"context"
-	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"fmt"
 	"os"
-	"reflect"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -17,7 +13,6 @@ import (
 	"github.com/ghodss/yaml"
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
-	apiextensionsclient "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,21 +21,18 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapiv1 "k8s.io/client-go/tools/clientcmd/api/v1"
-	certutil "k8s.io/client-go/util/cert"
 	"k8s.io/klog/v2"
 	"k8s.io/kubectl/pkg/cmd/util"
 	operatorclient "open-cluster-management.io/api/client/operator/clientset/versioned"
 	ocmfeature "open-cluster-management.io/api/feature"
 	operatorv1 "open-cluster-management.io/api/operator/v1"
 	"open-cluster-management.io/clusteradm/pkg/cmd/join/preflight"
-	"open-cluster-management.io/clusteradm/pkg/cmd/join/scenario"
 	genericclioptionsclusteradm "open-cluster-management.io/clusteradm/pkg/genericclioptions"
 	"open-cluster-management.io/clusteradm/pkg/helpers"
 	preflightinterface "open-cluster-management.io/clusteradm/pkg/helpers/preflight"
 	"open-cluster-management.io/clusteradm/pkg/helpers/printer"
-	"open-cluster-management.io/clusteradm/pkg/helpers/reader"
 	"open-cluster-management.io/clusteradm/pkg/helpers/version"
-	"open-cluster-management.io/clusteradm/pkg/helpers/wait"
+	"open-cluster-management.io/clusteradm/pkg/join"
 )
 
 const (
@@ -62,10 +54,10 @@ func (o *Options) complete(cmd *cobra.Command, args []string) (err error) {
 		return fmt.Errorf("no flags have been set: hub-apiserver, hub-token and cluster-name is required")
 	}
 
-	if o.token == "" {
+	if o.config.Token == "" {
 		return fmt.Errorf("token is missing")
 	}
-	if o.hubAPIServer == "" {
+	if o.config.HubAPIServer == "" {
 		return fmt.Errorf("hub-server is missing")
 	}
 	if o.clusterName == "" {
@@ -81,14 +73,14 @@ func (o *Options) complete(cmd *cobra.Command, args []string) (err error) {
 	// convert mode string to lower
 	o.mode = format(o.mode)
 
-	klog.V(1).InfoS("join options:", "dry-run", o.ClusteradmFlags.DryRun, "cluster", o.clusterName, "api-server", o.hubAPIServer, "output", o.outputFile)
+	klog.V(1).InfoS("join options:", "dry-run", o.ClusteradmFlags.DryRun, "cluster", o.clusterName, "api-server", o.config.HubAPIServer, "output", o.outputFile)
 
 	agentNamespace := AgentNamespacePrefix + "agent"
 
-	o.values = Values{
+	o.values = join.Values{
 		ClusterName: o.clusterName,
-		Hub: Hub{
-			APIServer: o.hubAPIServer,
+		Hub: join.Hub{
+			APIServer: o.config.HubAPIServer,
 		},
 		Registry:       o.registry,
 		AgentNamespace: agentNamespace,
@@ -104,20 +96,15 @@ func (o *Options) complete(cmd *cobra.Command, args []string) (err error) {
 
 	// values for default mode
 	klusterletName := DefaultOperatorName
-	klusterletNamespace := agentNamespace
 	if o.mode == string(operatorv1.InstallModeHosted) {
 		// add hash suffix to avoid conflict
 		klusterletName += "-hosted-" + helpers.RandStringRunes_az09(6)
-		agentNamespace = klusterletName
-		klusterletNamespace = AgentNamespacePrefix + agentNamespace
-
 		// update AgentNamespace
-		o.values.AgentNamespace = agentNamespace
+		o.values.AgentNamespace = klusterletName
 	}
 
-	o.values.Klusterlet = Klusterlet{
-		Name:                klusterletName,
-		KlusterletNamespace: klusterletNamespace,
+	o.values.Klusterlet = join.Klusterlet{
+		Name: klusterletName,
 	}
 	o.values.ManagedKubeconfig = o.managedKubeconfigFile
 	o.values.RegistrationFeatures = genericclioptionsclusteradm.ConvertToFeatureGateAPI(genericclioptionsclusteradm.SpokeMutableFeatureGate, ocmfeature.DefaultSpokeRegistrationFeatureGates)
@@ -139,7 +126,7 @@ func (o *Options) complete(cmd *cobra.Command, args []string) (err error) {
 		return err
 	}
 
-	o.values.BundleVersion = BundleVersion{
+	o.values.BundleVersion = join.BundleVersion{
 		RegistrationImageVersion: versionBundle.Registration,
 		PlacementImageVersion:    versionBundle.Placement,
 		WorkImageVersion:         versionBundle.Work,
@@ -158,7 +145,7 @@ func (o *Options) complete(cmd *cobra.Command, args []string) (err error) {
 		if err != nil {
 			return err
 		}
-		o.HubCADate = cabytes
+		o.config.CA = cabytes
 	}
 
 	// code logic of building hub client in join process:
@@ -173,11 +160,18 @@ func (o *Options) complete(cmd *cobra.Command, args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	//Create the kubeconfig for the internal client
-	o.HubConfig, err = o.createClientcmdapiv1Config(externalClientUnSecure, bootstrapExternalConfigUnSecure)
+
+	bootGetter := join.NewTokenBootStrapper(o.config, externalClientUnSecure)
+	bootKubeConfigRaw, err := bootGetter.KubeConfigRaw()
 	if err != nil {
 		return err
 	}
+	bootKubeConfig, err := bootGetter.KubeConfig()
+	if err != nil {
+		return err
+	}
+	o.bootKubeConfig = bootKubeConfig
+	o.values.Hub.KubeConfig = base64.StdEncoding.EncodeToString(bootKubeConfigRaw)
 
 	// get managed cluster externalServerURL
 	var kubeClient *kubernetes.Clientset
@@ -209,9 +203,6 @@ func (o *Options) complete(cmd *cobra.Command, args []string) (err error) {
 	}
 	o.values.Klusterlet.APIServer = klusterletApiserver
 
-	f := o.ClusteradmFlags.KubectlFactory
-	o.builder = f.NewBuilder()
-
 	klog.V(3).InfoS("values:",
 		"clusterName", o.values.ClusterName,
 		"hubAPIServer", o.values.Hub.APIServer,
@@ -225,7 +216,7 @@ func (o *Options) validate() error {
 	if err := preflightinterface.RunChecks(
 		[]preflightinterface.Checker{
 			preflight.HubKubeconfigCheck{
-				Config: o.HubConfig,
+				Config: &o.bootKubeConfig,
 			},
 			preflight.DeployModeCheck{
 				Mode:                  o.mode,
@@ -236,11 +227,6 @@ func (o *Options) validate() error {
 				ClusterName: o.values.ClusterName,
 			},
 		}, os.Stderr); err != nil {
-		return err
-	}
-
-	err := o.setKubeconfig()
-	if err != nil {
 		return err
 	}
 
@@ -283,7 +269,11 @@ func (o *Options) validate() error {
 }
 
 func (o *Options) run() error {
-	kubeClient, apiExtensionsClient, _, err := helpers.GetClients(o.ClusteradmFlags.KubectlFactory)
+	b := join.NewBuilder().
+		WithSpokeKubeConfig(o.ClusteradmFlags.KubectlFactory.ToRawKubeConfigLoader()).
+		WithValues(o.values)
+
+	applied, err := b.ApplyImport(context.TODO(), o.ClusteradmFlags.DryRun, o.wait, true, o.Streams)
 	if err != nil {
 		return err
 	}
@@ -298,108 +288,11 @@ func (o *Options) run() error {
 		return err
 	}
 
-	r := reader.NewResourceReader(o.builder, o.ClusteradmFlags.DryRun, o.Streams)
-
-	_, err = kubeClient.CoreV1().Namespaces().Get(context.TODO(), o.values.AgentNamespace, metav1.GetOptions{})
-
-	if errors.IsNotFound(err) {
-		_, err = kubeClient.CoreV1().Namespaces().Create(context.TODO(), &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name: o.values.AgentNamespace,
-				Annotations: map[string]string{
-					"workload.openshift.io/allowed": "management",
-				},
-			},
-		}, metav1.CreateOptions{})
-		if err != nil {
-			return err
-		}
-	} else if err != nil {
-		return err
-	}
-
-	if err = o.applyKlusterlet(r, operatorClient, apiExtensionsClient); err != nil {
-		return err
-	}
-
-	if len(o.outputFile) > 0 {
-		sh, err := os.OpenFile(o.outputFile, os.O_CREATE|os.O_WRONLY, 0755)
-		if err != nil {
-			return err
-		}
-		_, err = fmt.Fprintf(sh, "%s", string(r.RawAppliedResources()))
-		if err != nil {
-			return err
-		}
-		if err := sh.Close(); err != nil {
-			return err
-		}
-	}
-
-	fmt.Fprintf(o.Streams.Out, "Please log onto the hub cluster and run the following command:\n\n"+
-		"    %s accept --clusters %s\n\n", helpers.GetExampleHeader(), o.values.ClusterName)
-	return nil
-
-}
-
-func (o *Options) applyKlusterlet(r *reader.ResourceReader, operatorClient operatorclient.Interface, apiExtensionsClient apiextensionsclient.Interface) error {
-	available, err := checkIfRegistrationOperatorAvailable(o.ClusteradmFlags.KubectlFactory)
-	if err != nil {
-		return err
-	}
-
-	var files []string
-	// If Deployment/klusterlet is not deployed, deploy it
-	if !available {
-		files = append(files,
-			"join/klusterlets.crd.yaml",
-			"join/namespace.yaml",
-			"join/service_account.yaml",
-			"join/cluster_role.yaml",
-			"join/cluster_role_binding.yaml",
-		)
-	}
-	files = append(files,
-		"bootstrap_hub_kubeconfig.yaml",
-	)
-
-	if o.mode == string(operatorv1.InstallModeHosted) {
-		files = append(files,
-			"join/hosted/external_managed_kubeconfig.yaml",
-		)
-	}
-
-	err = r.Apply(scenario.Files, o.values, files...)
-	if err != nil {
-		return err
-	}
-
-	if !available {
-		err = r.Apply(scenario.Files, o.values, "join/operator.yaml")
-		if err != nil {
-			return err
-		}
-	}
-
-	if !o.ClusteradmFlags.DryRun {
-		if err := wait.WaitUntilCRDReady(apiExtensionsClient, "klusterlets.operator.open-cluster-management.io", o.wait); err != nil {
-			return err
-		}
-	}
-
-	err = r.Apply(scenario.Files, o.values, "join/klusterlets.cr.yaml")
-	if err != nil {
-		return err
-	}
-
-	if !available && o.wait && !o.ClusteradmFlags.DryRun {
+	if o.wait && !o.ClusteradmFlags.DryRun {
 		err = waitUntilRegistrationOperatorConditionIsTrue(o.ClusteradmFlags.KubectlFactory, int64(o.ClusteradmFlags.Timeout))
 		if err != nil {
 			return err
 		}
-	}
-
-	if o.wait && !o.ClusteradmFlags.DryRun {
 		if o.mode == string(operatorv1.InstallModeHosted) {
 			err = waitUntilKlusterletConditionIsTrue(operatorClient, int64(o.ClusteradmFlags.Timeout), o.values.Klusterlet.Name)
 			if err != nil {
@@ -412,7 +305,25 @@ func (o *Options) applyKlusterlet(r *reader.ResourceReader, operatorClient opera
 			}
 		}
 	}
+
+	if len(o.outputFile) > 0 {
+		sh, err := os.OpenFile(o.outputFile, os.O_CREATE|os.O_WRONLY, 0755)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(sh, "%s", string(applied))
+		if err != nil {
+			return err
+		}
+		if err := sh.Close(); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprintf(o.Streams.Out, "Please log onto the hub cluster and run the following command:\n\n"+
+		"    %s accept --clusters %s\n\n", helpers.GetExampleHeader(), o.values.ClusterName)
 	return nil
+
 }
 
 func checkIfRegistrationOperatorAvailable(f util.Factory) (bool, error) {
@@ -539,7 +450,7 @@ func (o *Options) createExternalBootstrapConfig() clientcmdapiv1.Config {
 			{
 				Name: "hub",
 				Cluster: clientcmdapiv1.Cluster{
-					Server:                o.hubAPIServer,
+					Server:                o.config.HubAPIServer,
 					InsecureSkipTLSVerify: true,
 				},
 			},
@@ -549,7 +460,7 @@ func (o *Options) createExternalBootstrapConfig() clientcmdapiv1.Config {
 			{
 				Name: "bootstrap",
 				AuthInfo: clientcmdapiv1.AuthInfo{
-					Token: o.token,
+					Token: o.config.Token,
 				},
 			},
 		},
@@ -566,107 +477,4 @@ func (o *Options) createExternalBootstrapConfig() clientcmdapiv1.Config {
 		},
 		CurrentContext: "bootstrap",
 	}
-}
-
-func (o *Options) createClientcmdapiv1Config(externalClientUnSecure *kubernetes.Clientset,
-	bootstrapExternalConfigUnSecure clientcmdapiv1.Config) (*clientcmdapiv1.Config, error) {
-	var err error
-	// set hub in cluster endpoint
-	if o.forceHubInClusterEndpointLookup {
-		o.hubInClusterEndpoint, err = helpers.GetAPIServer(externalClientUnSecure)
-		if err != nil {
-			if !errors.IsNotFound(err) {
-				return nil, err
-			}
-		}
-	}
-
-	bootstrapConfig := bootstrapExternalConfigUnSecure.DeepCopy()
-	bootstrapConfig.Clusters[0].Cluster.InsecureSkipTLSVerify = false
-	bootstrapConfig.Clusters[0].Cluster.Server = o.hubAPIServer
-	if o.HubCADate != nil {
-		// directly set ca-data if --ca-file is set
-		bootstrapConfig.Clusters[0].Cluster.CertificateAuthorityData = o.HubCADate
-	} else {
-		// get ca data from externalClientUnsecure, ca may empty(cluster-info exists with no ca data)
-		ca, err := helpers.GetCACert(externalClientUnSecure)
-		if err != nil {
-			return nil, err
-		}
-		bootstrapConfig.Clusters[0].Cluster.CertificateAuthorityData = ca
-	}
-
-	return bootstrapConfig, nil
-}
-
-func (o *Options) setKubeconfig() error {
-	// replace apiserver if the flag is set, the apiserver value should not be set
-	// to in-cluster endpoint until preflight check is finished
-	if o.forceHubInClusterEndpointLookup {
-		o.HubConfig.Clusters[0].Cluster.Server = o.hubInClusterEndpoint
-	}
-
-	// set the proxy url
-	if len(o.proxyURL) > 0 {
-		o.HubConfig.Clusters[0].Cluster.ProxyURL = o.proxyURL
-	}
-
-	// append the proxy ca data
-	if len(o.proxyURL) > 0 && len(o.proxyCAFile) > 0 {
-		proxyCAData, err := os.ReadFile(o.proxyCAFile)
-		if err != nil {
-			return err
-		}
-		o.HubConfig.Clusters[0].Cluster.CertificateAuthorityData, err = mergeCertificateData(
-			o.HubConfig.Clusters[0].Cluster.CertificateAuthorityData, proxyCAData)
-		if err != nil {
-			return err
-		}
-	}
-
-	bootstrapConfigBytes, err := yaml.Marshal(o.HubConfig)
-	if err != nil {
-		return err
-	}
-
-	o.values.Hub.KubeConfig = base64.StdEncoding.EncodeToString(bootstrapConfigBytes)
-	return nil
-}
-
-func mergeCertificateData(caBundles ...[]byte) ([]byte, error) {
-	var all []*x509.Certificate
-	for _, caBundle := range caBundles {
-		if len(caBundle) == 0 {
-			continue
-		}
-		certs, err := certutil.ParseCertsPEM(caBundle)
-		if err != nil {
-			return []byte{}, err
-		}
-		all = append(all, certs...)
-	}
-
-	// remove duplicated cert
-	var merged []*x509.Certificate
-	for i := range all {
-		found := false
-		for j := range merged {
-			if reflect.DeepEqual(all[i].Raw, merged[j].Raw) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			merged = append(merged, all[i])
-		}
-	}
-
-	// encode the merged certificates
-	b := bytes.Buffer{}
-	for _, cert := range merged {
-		if err := pem.Encode(&b, &pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}); err != nil {
-			return []byte{}, err
-		}
-	}
-	return b.Bytes(), nil
 }

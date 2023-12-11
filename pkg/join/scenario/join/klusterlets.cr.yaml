@@ -10,7 +10,7 @@ spec:
   workImagePullSpec: {{ .Registry }}/work:{{ .BundleVersion.RegistrationImageVersion }}
   imagePullSpec: {{.Registry}}/registration-operator:{{.BundleVersion.OperatorImageVersion}}
   clusterName: {{ .ClusterName }}
-  namespace: {{ .Klusterlet.KlusterletNamespace }} 
+  namespace: {{ .AgentNamespace }}
   externalServerURLs:
   {{ if .Klusterlet.APIServer }}
   - url: {{ .Klusterlet.APIServer }}

@@ -4,8 +4,8 @@ package klusterlet
 import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/cli-runtime/pkg/resource"
-	"open-cluster-management.io/clusteradm/pkg/cmd/join"
 	genericclioptionsclusteradm "open-cluster-management.io/clusteradm/pkg/genericclioptions"
+	"open-cluster-management.io/clusteradm/pkg/join"
 )
 
 // Options is holding all the command-line options

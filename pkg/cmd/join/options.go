@@ -3,10 +3,9 @@ package join
 
 import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
-	"k8s.io/cli-runtime/pkg/resource"
 	clientcmdapiv1 "k8s.io/client-go/tools/clientcmd/api/v1"
-	operatorv1 "open-cluster-management.io/api/operator/v1"
 	genericclioptionsclusteradm "open-cluster-management.io/clusteradm/pkg/genericclioptions"
+	"open-cluster-management.io/clusteradm/pkg/join"
 )
 
 // Options: The structure holding all the command-line options
@@ -14,11 +13,7 @@ type Options struct {
 	//ClusteradmFlags: The generic options from the clusteradm cli-runtime.
 	ClusteradmFlags *genericclioptionsclusteradm.ClusteradmFlags
 
-	//Values below are input from flags
-	//The token generated on the hub to access it from the cluster
-	token string
-	//The external hub apiserver url (https://<host>:<port>)
-	hubAPIServer string
+	config join.BootstrapConfig
 	//The hub ca-file(optional)
 	caFile string
 	//the name under the cluster must be imported
@@ -51,81 +46,18 @@ type Options struct {
 	forceManagedInClusterEndpointLookup bool
 	hubInClusterEndpoint                string
 
-	//Values below are tempoary data
-	//HubCADate: data in hub ca file
-	HubCADate []byte
-	// hub config
-	HubConfig *clientcmdapiv1.Config
-
-	// The URL of a forward proxy server which will be used by agnets on the managed cluster
-	// to connect to the hub cluster (optional)
-	proxyURL string
-	//The proxy server ca-file(optional)
-	proxyCAFile string
-
 	//Values below are used to fill in yaml files
-	values Values
-
-	builder *resource.Builder
+	values join.Values
 
 	Streams genericclioptions.IOStreams
-}
 
-// Values: The values used in the template
-type Values struct {
-	//ClusterName: the name of the joined cluster on the hub
-	ClusterName string
-	//AgentNamespace: the namespace to deploy the agent
-	AgentNamespace string
-	//Hub: Hub information
-	Hub Hub
-	//Klusterlet is the klusterlet related configuration
-	Klusterlet Klusterlet
-	//Registry is the image registry related configuration
-	Registry string
-	//bundle version
-	BundleVersion BundleVersion
-	// managed kubeconfig
-	ManagedKubeconfig string
-
-	// Features is the slice of feature for registration
-	RegistrationFeatures []operatorv1.FeatureGate
-
-	// Features is the slice of feature for work
-	WorkFeatures []operatorv1.FeatureGate
-}
-
-// Hub: The hub values for the template
-type Hub struct {
-	//APIServer: The API Server external URL
-	APIServer string
-	//KubeConfig: The kubeconfig of the bootstrap secret to connect to the hub
-	KubeConfig string
-}
-
-// Klusterlet is for templating klusterlet configuration
-type Klusterlet struct {
-	//APIServer: The API Server external URL
-	APIServer           string
-	Mode                string
-	Name                string
-	KlusterletNamespace string
-}
-
-type BundleVersion struct {
-	// registration image version
-	RegistrationImageVersion string
-	// placement image version
-	PlacementImageVersion string
-	// work image version
-	WorkImageVersion string
-	// operator image version
-	OperatorImageVersion string
+	bootKubeConfig clientcmdapiv1.Config
 }
 
 func newOptions(clusteradmFlags *genericclioptionsclusteradm.ClusteradmFlags, streams genericclioptions.IOStreams) *Options {
 	return &Options{
 		ClusteradmFlags: clusteradmFlags,
 		Streams:         streams,
+		config:          join.BootstrapConfig{},
 	}
 }
